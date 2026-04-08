@@ -4,6 +4,30 @@ import Foundation
 /// Extracts device UUID and KakaoTalk user ID from the local system.
 public enum DeviceInfo {
 
+    /// In-process cache for the discovered user ID.
+    nonisolated(unsafe) static var cachedUserId: Int? = nil
+
+    /// Path to the on-disk user ID cache file.
+    public static var userIdCachePath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/.kakaocli/userid"
+    }
+
+    /// Persist the user ID to disk and in-process cache.
+    static func saveUserIdCache(_ id: Int) {
+        cachedUserId = id
+        let path = userIdCachePath
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? String(id).write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Clear both the in-process cache and the on-disk cache file.
+    public static func clearUserIdCache() {
+        cachedUserId = nil
+        try? FileManager.default.removeItem(atPath: userIdCachePath)
+    }
+
     /// Get the IOPlatformUUID from IORegistry.
     public static func platformUUID() throws -> String {
         let process = Process()
@@ -52,11 +76,26 @@ public enum DeviceInfo {
     /// Extract user ID from the KakaoTalk preferences plist.
     ///
     /// Tries multiple strategies in order:
+    /// 0. In-process cache, then on-disk cache (~/.kakaocli/userid)
     /// 1. FSChatWindowTransparency common suffix (legacy)
     /// 2. Direct key lookup (userId, user_id, etc.)
     /// 3. Recover userId by reversing SHA-512 hash from plist revision keys
     /// 4. FSChatWindowFrame_ common suffix
     public static func userId() throws -> Int {
+        // Strategy 0: Return from in-process cache first
+        if let cached = cachedUserId {
+            return cached
+        }
+
+        // Strategy 0b: Read from on-disk cache
+        let cachePath = userIdCachePath
+        if FileManager.default.fileExists(atPath: cachePath),
+           let contents = try? String(contentsOfFile: cachePath, encoding: .utf8),
+           let id = Int(contents.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            cachedUserId = id
+            return id
+        }
+
         let plistPaths = [containerPreferencesPath, preferencesPath]
         for plistPath in plistPaths {
             guard FileManager.default.fileExists(atPath: plistPath) else { continue }
@@ -73,6 +112,7 @@ public enum DeviceInfo {
             if fsChatKeys.count >= 2 {
                 let suffixes = fsChatKeys.map { String($0.dropFirst(transparencyPrefix.count)) }
                 if let commonSuffix = longestCommonSuffix(suffixes), let id = Int(commonSuffix) {
+                    saveUserIdCache(id)
                     return id
                 }
             }
@@ -80,8 +120,14 @@ public enum DeviceInfo {
             // Strategy 2: Direct key lookup
             let candidateKeys = ["userId", "user_id", "KAKAO_USER_ID", "userID"]
             for key in candidateKeys {
-                if let id = plist[key] as? Int { return id }
-                if let str = plist[key] as? String, let id = Int(str) { return id }
+                if let id = plist[key] as? Int {
+                    saveUserIdCache(id)
+                    return id
+                }
+                if let str = plist[key] as? String, let id = Int(str) {
+                    saveUserIdCache(id)
+                    return id
+                }
             }
 
             // Strategy 3: Recover userId from SHA-512 hash in plist revision keys.
@@ -90,6 +136,7 @@ public enum DeviceInfo {
             // We brute-force the pre-image since userIds are typically small integers.
             if let hash = activeAccountHash(from: plist) {
                 if let id = recoverUserIdFromSHA512(hexHash: hash) {
+                    saveUserIdCache(id)
                     return id
                 }
             }
@@ -100,6 +147,7 @@ public enum DeviceInfo {
             if frameKeys.count >= 2 {
                 let suffixes = frameKeys.map { String($0.dropFirst(framePrefix.count)) }
                 if let commonSuffix = longestCommonSuffix(suffixes), let id = Int(commonSuffix) {
+                    saveUserIdCache(id)
                     return id
                 }
             }
