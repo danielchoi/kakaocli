@@ -242,19 +242,21 @@ public enum DeviceInfo {
     /// Recover a userId by brute-forcing the SHA-512 pre-image.
     /// KakaoTalk stores SHA-512(userId) as hex in plist keys. Since userIds are
     /// typically small integers, this is fast (< 1 second for IDs under 1M).
-    /// Searches up to 1 billion with a 10-second timeout.
+    /// Searches up to 4 billion with a 300-second timeout.
     public static func recoverUserIdFromSHA512(hexHash: String) -> Int? {
         guard hexHash.count == 128 else { return nil }
         // Parse target hash to bytes
         var targetBytes = [UInt8](repeating: 0, count: 64)
-        var hexChars = Array(hexHash)
+        let hexChars = Array(hexHash)
         for i in 0..<64 {
             guard let byte = UInt8(String(hexChars[i*2...i*2+1]), radix: 16) else { return nil }
             targetBytes[i] = byte
         }
 
+        fputs("Could not find user ID from plist. Starting SHA-512 brute-force search (this may take a few minutes)...\n", stderr)
+
         let startTime = CFAbsoluteTimeGetCurrent()
-        let maxId = 1_000_000_000
+        let maxId = 4_000_000_000
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA512_DIGEST_LENGTH))
 
         for i in 0..<maxId {
@@ -262,11 +264,17 @@ public enum DeviceInfo {
             let data = Array(s.utf8)
             CC_SHA512(data, CC_LONG(data.count), &hash)
             if hash == targetBytes {
+                let elapsed = Int(CFAbsoluteTimeGetCurrent() - startTime)
+                fputs("Found user ID: \(i) (cached to ~/.kakaocli/userid)\n", stderr)
+                _ = elapsed  // suppress unused warning; elapsed logged above via Found message
                 return i
             }
-            // Timeout after 10 seconds
+            // Progress + timeout every 5M iterations
             if i % 5_000_000 == 0 && i > 0 {
-                if CFAbsoluteTimeGetCurrent() - startTime > 10 { return nil }
+                let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+                let millions = i / 1_000_000
+                fputs("  Searching... \(millions)m checked (\(Int(elapsed))s)\n", stderr)
+                if elapsed > 300 { return nil }
             }
         }
         return nil
