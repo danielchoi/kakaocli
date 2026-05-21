@@ -212,9 +212,23 @@ public enum ChatHarvester {
     private static func extractName(from row: AXUIElement) -> String {
         for cell in AXHelpers.children(row) {
             guard AXHelpers.role(cell) == "AXCell" else { continue }
-            for child in AXHelpers.children(cell) {
-                if AXHelpers.role(child) == "AXStaticText" && AXHelpers.identifier(child) == "_NS:18" {
-                    return AXHelpers.value(child) ?? "(unknown)"
+
+            let staticTexts = AXHelpers.children(cell).filter { AXHelpers.role($0) == "AXStaticText" }
+
+            // KakaoTalk has used different identifiers for the chat title across versions.
+            // Current versions use _NS:40; older versions used _NS:18.
+            for child in staticTexts where ["_NS:40", "_NS:18"].contains(AXHelpers.identifier(child) ?? "") {
+                if let name = AXHelpers.value(child), !name.isEmpty {
+                    return name
+                }
+            }
+
+            // Fallback: ignore obvious non-name labels (member count, time/date) and use the first text left.
+            for child in staticTexts {
+                let id = AXHelpers.identifier(child) ?? ""
+                if id == "Count Label" || id == "_NS:69" { continue }
+                if let name = AXHelpers.value(child), !name.isEmpty {
+                    return name
                 }
             }
         }
