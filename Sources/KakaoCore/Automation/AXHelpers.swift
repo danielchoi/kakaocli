@@ -187,19 +187,48 @@ public enum AXHelpers {
     }
 
     /// Find the AXRow in a chat list whose name label matches the given text.
-    /// KakaoTalk chat list: AXTable > AXRow > AXCell > AXStaticText(id="_NS:18")
+    /// KakaoTalk chat list: AXTable > AXRow > AXCell > AXStaticText.
+    /// Chat title identifiers vary by KakaoTalk version (_NS:40 current, _NS:18 older).
     public static func findChatRow(_ table: AXUIElement, chatName: String, exact: Bool = false) -> AXUIElement? {
-        for row in children(table) {
-            guard role(row) == "AXRow" else { continue }
-            for cell in children(row) {
-                guard role(cell) == "AXCell" else { continue }
-                for child in children(cell) {
-                    if role(child) == "AXStaticText" && identifier(child) == "_NS:18" {
-                        let name = value(child) ?? ""
-                        let matches = exact ? name == chatName : name.localizedCaseInsensitiveContains(chatName)
-                        if matches {
-                            return row
-                        }
+        let titleIds = Set(["_NS:40", "_NS:18"])
+        let ignoredFallbackIds = Set(["Count Label", "_NS:69"])
+        let rows = children(table).filter { role($0) == "AXRow" }
+
+        func titleName(in row: AXUIElement) -> String? {
+            for cell in children(row) where role(cell) == "AXCell" {
+                for child in children(cell) where role(child) == "AXStaticText" {
+                    if titleIds.contains(identifier(child) ?? ""), let name = value(child), !name.isEmpty {
+                        return name
+                    }
+                }
+            }
+            return nil
+        }
+
+        // Fast path: exact title match, returning immediately. This avoids scanning every row
+        // for short names like "RO" while still avoiding false positives like "Silent Chatroom".
+        for row in rows {
+            if titleName(in: row) == chatName {
+                return row
+            }
+        }
+        if exact { return nil }
+
+        // Substring title match fallback.
+        for row in rows {
+            if let name = titleName(in: row), name.localizedCaseInsensitiveContains(chatName) {
+                return row
+            }
+        }
+
+        // Last-resort fallback for future identifier changes: ignore obvious count/date labels.
+        for row in rows {
+            for cell in children(row) where role(cell) == "AXCell" {
+                for child in children(cell) where role(child) == "AXStaticText" {
+                    let id = identifier(child) ?? ""
+                    if ignoredFallbackIds.contains(id) { continue }
+                    if let name = value(child), name.localizedCaseInsensitiveContains(chatName) {
+                        return row
                     }
                 }
             }
